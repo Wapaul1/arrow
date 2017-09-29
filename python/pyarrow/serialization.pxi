@@ -59,6 +59,9 @@ cdef class SerializationContext:
         self.custom_serializers = dict()
         self.custom_deserializers = dict()
 
+    def get_attrs(self):
+       return self.type_to_type_id, self.whitelisted_types
+
     def register_type(self, type_, type_id, pickle=False,
                       custom_serializer=None, custom_deserializer=None):
         """EXPERIMENTAL: Add type to the list of types we can serialize.
