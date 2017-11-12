@@ -29,8 +29,12 @@
 #include "arrow/status.h"
 #include "arrow/util/visibility.h"
 #include "plasma/common.h"
+#include "arrow/buffer.h"
+#include "arrow/gpu/cuda_api.h"
 
 using arrow::Status;
+using namespace arrow::gpu;
+using arrow::Buffer;
 
 namespace plasma {
 
@@ -41,6 +45,7 @@ constexpr int64_t kL3CacheSizeBytes = 100000000;
 
 /// Object buffer data structure.
 struct ObjectBuffer {
+  std::shared_ptr<Buffer> object_data;
   /// The size in bytes of the data object.
   int64_t data_size;
   /// The address of the data object.
@@ -110,8 +115,11 @@ class ARROW_EXPORT PlasmaClient {
   /// \param data The address of the newly created object will be written here.
   /// \return The return status.
   Status Create(const ObjectID& object_id, int64_t data_size, uint8_t* metadata,
-                int64_t metadata_size, uint8_t** data);
+                int64_t metadata_size, uint8_t** data, int device_num=0);
 
+
+  Status Create_GPU(const ObjectID& object_id, int64_t data_size, uint8_t* metadata,
+                int64_t metadata_size, std::shared_ptr<CudaBuffer>* data, int device_num=0);
   /// Get some objects from the Plasma Store. This function will block until the
   /// objects have all been created and sealed in the Plasma Store or the
   /// timeout
@@ -363,6 +371,8 @@ class ARROW_EXPORT PlasmaClient {
   /// information to make sure that it does not delay in releasing so much
   /// memory that the store is unable to evict enough objects to free up space.
   int64_t store_capacity_;
+  /// Cuda Device Manager.
+  arrow::gpu::CudaDeviceManager* manager_;
 };
 
 }  // namespace plasma

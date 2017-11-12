@@ -82,8 +82,8 @@ set(PLASMA_SRCS
 ADD_ARROW_LIB(plasma
   SOURCES ${PLASMA_SRCS}
   DEPENDENCIES gen_plasma_fbs
-  SHARED_LINK_LIBS ${FLATBUFFERS_STATIC_LIB} ${CMAKE_THREAD_LIBS_INIT} arrow_static
-  STATIC_LINK_LIBS ${FLATBUFFERS_STATIC_LIB} ${CMAKE_THREAD_LIBS_INIT} arrow_static)
+  SHARED_LINK_LIBS ${FLATBUFFERS_STATIC_LIB} ${CMAKE_THREAD_LIBS_INIT} arrow_static arrow_gpu_shared
+  STATIC_LINK_LIBS ${FLATBUFFERS_STATIC_LIB} ${CMAKE_THREAD_LIBS_INIT} arrow_static arrow_gpu_static)
 
 # The optimization flag -O3 is suggested by dlmalloc.c, which is #included in
 # malloc.cc; we set it here regardless of whether we do a debug or release build.
@@ -113,7 +113,7 @@ if ("${COMPILER_FAMILY}" STREQUAL "gcc")
 endif()
 
 add_executable(plasma_store store.cc)
-target_link_libraries(plasma_store plasma_static)
+target_link_libraries(plasma_store plasma_static arrow_gpu_shared)
 
 # Headers: top level
 install(FILES
@@ -143,6 +143,6 @@ install(
 #######################################
 
 ADD_ARROW_TEST(test/serialization_tests)
-ARROW_TEST_LINK_LIBRARIES(test/serialization_tests plasma_static)
+ARROW_TEST_LINK_LIBRARIES(test/serialization_tests plasma_static arrow_gpu_shared)
 ADD_ARROW_TEST(test/client_tests)
-ARROW_TEST_LINK_LIBRARIES(test/client_tests plasma_static)
+ARROW_TEST_LINK_LIBRARIES(test/client_tests plasma_static arrow_gpu_shared)

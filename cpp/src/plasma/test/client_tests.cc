@@ -26,13 +26,14 @@
 #include "plasma/common.h"
 #include "plasma/plasma.h"
 #include "plasma/protocol.h"
+#include "arrow/gpu/cuda_api.h"
 
 #include "gtest/gtest.h"
 
 namespace plasma {
 
 std::string test_executable;  // NOLINT
-
+using namespace arrow::gpu;
 class TestPlasmaStore : public ::testing::Test {
  public:
   // TODO(pcm): At the moment, stdout of the test gets mixed up with
@@ -71,8 +72,8 @@ TEST_F(TestPlasmaStore, ContainsTest) {
   int64_t data_size = 100;
   uint8_t metadata[] = {5};
   int64_t metadata_size = sizeof(metadata);
-  uint8_t* data;
-  ARROW_CHECK_OK(client_.Create(object_id, data_size, metadata, metadata_size, &data));
+  std::shared_ptr<CudaBuffer> data;
+  ARROW_CHECK_OK(client_.Create_GPU(object_id, data_size, metadata, metadata_size, &data, 1));
   ARROW_CHECK_OK(client_.Seal(object_id));
   // Avoid race condition of Plasma Manager waiting for notification.
   ObjectBuffer object_buffer;
@@ -187,19 +188,28 @@ TEST_F(TestPlasmaStore, MultipleClientTest) {
   int64_t data_size = 100;
   uint8_t metadata[] = {5};
   int64_t metadata_size = sizeof(metadata);
-  uint8_t* data;
-  ARROW_CHECK_OK(client2_.Create(object_id, data_size, metadata, metadata_size, &data));
+  uint8_t test_data[] = "Testing data XXXXXX";
+  uint8_t read_data[20] = {0};
+  std::shared_ptr<CudaBuffer> data;
+  ARROW_CHECK_OK(client2_.Create_GPU(object_id, data_size, metadata, metadata_size, &data, 1));
+  CudaBufferWriter writer(data);
+  writer.Write(test_data, 20);
+  writer.Flush();
   ARROW_CHECK_OK(client2_.Seal(object_id));
   // Test that the first client can get the object.
   ObjectBuffer object_buffer;
   ARROW_CHECK_OK(client_.Get(&object_id, 1, -1, &object_buffer));
+  CudaBufferReader reader(std::dynamic_pointer_cast<CudaBuffer>(object_buffer.object_data));
+  int64_t bytes_read;
+  reader.Read(20, &bytes_read, read_data);
+  ASSERT_EQ(0, std::memcmp(read_data, test_data, 20));
   ARROW_CHECK_OK(client_.Contains(object_id, &has_object));
   ASSERT_EQ(has_object, true);
 
   // Test that one client disconnecting does not interfere with the other.
   // First create object on the second client.
   object_id = ObjectID::from_random();
-  ARROW_CHECK_OK(client2_.Create(object_id, data_size, metadata, metadata_size, &data));
+  ARROW_CHECK_OK(client2_.Create_GPU(object_id, data_size, metadata, metadata_size, &data, 1));
   // Disconnect the first client.
   ARROW_CHECK_OK(client_.Disconnect());
   // Test that the second client can seal and get the created object.
