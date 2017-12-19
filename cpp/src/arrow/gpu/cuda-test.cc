@@ -83,7 +83,7 @@ TEST_F(TestCudaBuffer, CopyFromHost) {
 // IPC only supported on Linux
 #if defined(__linux)
 
-TEST_F(TestCudaBuffer, ExportForIpc) {
+TEST_F(TestCudaBuffer, DISABLED_ExportForIpc) {
   // For this test to work, a second process needs to be spawned
   const int64_t kSize = 1000;
   std::shared_ptr<CudaBuffer> device_buffer;

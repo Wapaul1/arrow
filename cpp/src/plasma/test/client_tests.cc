@@ -44,7 +44,7 @@ class TestPlasmaStore : public ::testing::Test {
     std::string plasma_command =
         plasma_directory +
         "/plasma_store -m 1000000000 -s /tmp/store 1> /dev/null 2> /dev/null &";
-    //system(plasma_command.c_str());
+    system(plasma_command.c_str());
     ARROW_CHECK_OK(client_.Connect("/tmp/store", "", PLASMA_DEFAULT_RELEASE_DELAY));
     ARROW_CHECK_OK(client2_.Connect("/tmp/store", "", PLASMA_DEFAULT_RELEASE_DELAY));
   }
@@ -195,28 +195,19 @@ TEST_F(TestPlasmaStore, MultipleClientTest) {
   int64_t data_size = 100;
   uint8_t metadata[] = {5};
   int64_t metadata_size = sizeof(metadata);
-  uint8_t test_data[] = "Testing data XXXXXX";
-  uint8_t read_data[20] = {0};
   std::shared_ptr<Buffer> data;
-  ARROW_CHECK_OK(client2_.Create(object_id, data_size, metadata, metadata_size, &data, 1));
-  CudaBufferWriter writer(std::dynamic_pointer_cast<CudaBuffer>(data));
-  writer.Write(test_data, 20);
-  writer.Flush();
+  ARROW_CHECK_OK(client2_.Create(object_id, data_size, metadata, metadata_size, &data));
   ARROW_CHECK_OK(client2_.Seal(object_id));
   // Test that the first client can get the object.
   ObjectBuffer object_buffer;
   ARROW_CHECK_OK(client_.Get(&object_id, 1, -1, &object_buffer));
-  CudaBufferReader reader(std::dynamic_pointer_cast<CudaBuffer>(object_buffer.data));
-  int64_t bytes_read;
-  reader.Read(20, &bytes_read, read_data);
-  ASSERT_EQ(0, std::memcmp(read_data, test_data, 20));
   ARROW_CHECK_OK(client_.Contains(object_id, &has_object));
   ASSERT_EQ(has_object, true);
 
   // Test that one client disconnecting does not interfere with the other.
   // First create object on the second client.
   object_id = ObjectID::from_random();
-  ARROW_CHECK_OK(client2_.Create(object_id, data_size, metadata, metadata_size, &data, 1));
+  ARROW_CHECK_OK(client2_.Create(object_id, data_size, metadata, metadata_size, &data));
   // Disconnect the first client.
   ARROW_CHECK_OK(client_.Disconnect());
   // Test that the second client can seal and get the created object.
@@ -244,7 +235,7 @@ TEST_F(TestPlasmaStore, ManyObjectTest) {
     int64_t data_size = 100;
     uint8_t metadata[] = {5};
     int64_t metadata_size = sizeof(metadata);
-    uint8_t* data;
+    std::shared_ptr<Buffer> data;
     ARROW_CHECK_OK(client_.Create(object_id, data_size, metadata, metadata_size, &data));
 
     if (i % 3 == 0) {

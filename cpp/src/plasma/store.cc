@@ -209,7 +209,6 @@ int PlasmaStore::create_object(const ObjectID& object_id, int64_t data_size,
   entry->device_num = device_num;
   store_info_.objects[object_id] = std::move(entry);
   if (device_num != 0) {
-    //CudaBuffer* buffer = reinterpret_cast<CudaBuffer*>(pointer);
     data_gpu->ExportForIpc(&result->handle.ipc_handle); 
   }
   result->handle.store_fd = fd;
