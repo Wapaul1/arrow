@@ -45,15 +45,13 @@ constexpr int64_t kL3CacheSizeBytes = 100000000;
 
 /// Object buffer data structure.
 struct ObjectBuffer {
-  std::shared_ptr<Buffer> object_data;
+  std::shared_ptr<Buffer> data;
   /// The size in bytes of the data object.
   int64_t data_size;
-  /// The address of the data object.
-  uint8_t* data;
   /// The metadata size in bytes.
   int64_t metadata_size;
-  /// The address of the metadata.
-  uint8_t* metadata;
+  // Device number.
+  int device_num;
 };
 
 /// Configuration options for the plasma client.
@@ -115,11 +113,7 @@ class ARROW_EXPORT PlasmaClient {
   /// \param data The address of the newly created object will be written here.
   /// \return The return status.
   Status Create(const ObjectID& object_id, int64_t data_size, uint8_t* metadata,
-                int64_t metadata_size, uint8_t** data, int device_num=0);
-
-
-  Status Create_GPU(const ObjectID& object_id, int64_t data_size, uint8_t* metadata,
-                int64_t metadata_size, std::shared_ptr<CudaBuffer>* data, int device_num=0);
+                int64_t metadata_size, std::shared_ptr<Buffer>* data, int device_num=0);
   /// Get some objects from the Plasma Store. This function will block until the
   /// objects have all been created and sealed in the Plasma Store or the
   /// timeout

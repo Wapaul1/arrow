@@ -71,7 +71,6 @@ typedef std::unordered_map<ObjectID, ObjectRequest, UniqueIDHasher> ObjectReques
 struct object_handle {
   // IPC handle for Cuda.
   std::shared_ptr<CudaIpcMemHandle> ipc_handle;
-  std::shared_ptr<CudaBuffer> buffer;
   /// The file descriptor of the memory mapped file in the store. It is used as
   /// a unique identifier of the file in the client to look up the corresponding
   /// file descriptor on the client's side.

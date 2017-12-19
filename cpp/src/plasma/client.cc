@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <thread>
 #include <vector>
+#include <mutex>
 
 #include "plasma/common.h"
 #include "plasma/fling.h"
@@ -46,12 +47,15 @@
 #include "plasma/plasma.h"
 #include "plasma/protocol.h"
 #include "arrow/gpu/cuda_api.h"
+#include "arrow/buffer.h"
 
 #define XXH_STATIC_LINKING_ONLY
 #include "thirdparty/xxhash.h"
 
 #define XXH64_DEFAULT_SEED 0
 using namespace arrow::gpu;
+using arrow::MutableBuffer;
+
 namespace plasma {
 
 // Number of threads used for memcopy and hash computations.
@@ -72,6 +76,14 @@ struct ObjectInUseEntry {
   /// A flag representing whether the object has been sealed.
   bool is_sealed;
 };
+
+struct GpuProcessHandle {
+  std::shared_ptr<CudaBuffer> ptr;
+  int client_count;
+};
+
+static std::unordered_map<ObjectID, GpuProcessHandle*, UniqueIDHasher> gpu_object_map;
+static std::mutex gpu_mutex;
 
 PlasmaClient::PlasmaClient() {
   CudaDeviceManager::GetInstance(&manager_);
@@ -150,7 +162,7 @@ void PlasmaClient::increment_object_count(const ObjectID& object_id, PlasmaObjec
 }
 
 Status PlasmaClient::Create(const ObjectID& object_id, int64_t data_size,
-                            uint8_t* metadata, int64_t metadata_size, uint8_t** data, int device_num) {
+                            uint8_t* metadata, int64_t metadata_size, std::shared_ptr<Buffer>* data, int device_num) {
   ARROW_LOG(DEBUG) << "called plasma_create on conn " << store_conn_ << " with size "
                    << data_size << " and metadata size " << metadata_size;
   RETURN_NOT_OK(SendCreateRequest(store_conn_, object_id, data_size, metadata_size, device_num));
@@ -161,21 +173,38 @@ Status PlasmaClient::Create(const ObjectID& object_id, int64_t data_size,
   RETURN_NOT_OK(ReadCreateReply(buffer.data(), buffer.size(), &id, &object));
   // If the CreateReply included an error, then the store will not send a file
   // descriptor.
-  int fd = recv_fd(store_conn_);
-  ARROW_CHECK(fd >= 0) << "recv not successful";
-  ARROW_CHECK(object.data_size == data_size);
-  ARROW_CHECK(object.metadata_size == metadata_size);
-  // The metadata should come right after the data.
-  ARROW_CHECK(object.metadata_offset == object.data_offset + data_size);
-  *data = lookup_or_mmap(fd, object.handle.store_fd, object.handle.mmap_size) +
-          object.data_offset;
-  // If plasma_create is being called from a transfer, then we will not copy the
-  // metadata here. The metadata will be written along with the data streamed
-  // from the transfer.
-  if (metadata != NULL) {
-    // Copy the metadata to the buffer.
-    memcpy(*data + object.data_size, metadata, metadata_size);
+  if (device_num == 0) {
+    int fd = recv_fd(store_conn_);
+    ARROW_CHECK(fd >= 0) << "recv not successful";
+    ARROW_CHECK(object.data_size == data_size);
+    ARROW_CHECK(object.metadata_size == metadata_size);
+    // The metadata should come right after the data.
+    ARROW_CHECK(object.metadata_offset == object.data_offset + data_size);
+    *data = std::make_shared<MutableBuffer>(lookup_or_mmap(fd, object.handle.store_fd, object.handle.mmap_size) +
+          object.data_offset, data_size + metadata_size);
+    // If plasma_create is being called from a transfer, then we will not copy the
+    // metadata here. The metadata will be written along with the data streamed
+    // from the transfer.
+    if (metadata != NULL) {
+      // Copy the metadata to the buffer.      
+      memcpy((*data)->mutable_data() + object.data_size, metadata, metadata_size);
+    }
   }
+  else {
+    std::lock_guard<std::mutex> lock(gpu_mutex);
+    std::shared_ptr<CudaContext> context;
+    manager_->GetContext(device_num - 1, &context);
+    GpuProcessHandle* handle = new GpuProcessHandle();
+    context->OpenIpcBuffer(*object.handle.ipc_handle, &handle->ptr);
+    gpu_object_map[object_id] = handle;
+    *data = handle->ptr;
+    if (metadata != NULL) {
+      // Copy the metadata to the buffer.
+      CudaBufferWriter writer(std::dynamic_pointer_cast<CudaBuffer>(*data));
+      writer.WriteAt(object.data_size, metadata, metadata_size);
+    }
+  }
+
   // Increment the count of the number of instances of this object that this
   // client is using. A call to PlasmaClient::Release is required to decrement
   // this
@@ -190,40 +219,6 @@ Status PlasmaClient::Create(const ObjectID& object_id, int64_t data_size,
   return Status::OK();
 }
 
-Status PlasmaClient::Create_GPU(const ObjectID& object_id, int64_t data_size,
-                            uint8_t* metadata, int64_t metadata_size, std::shared_ptr<CudaBuffer>* data, int device_num) {
-  ARROW_LOG(DEBUG) << "called plasma_create on conn " << store_conn_ << " with size "
-                   << data_size << " and metadata size " << metadata_size;
-  RETURN_NOT_OK(SendCreateRequest(store_conn_, object_id, data_size, metadata_size, device_num));
-  std::vector<uint8_t> buffer;
-  RETURN_NOT_OK(PlasmaReceive(store_conn_, MessageType_PlasmaCreateReply, &buffer));
-  ObjectID id;
-  PlasmaObject object;
-  RETURN_NOT_OK(ReadCreateReply(buffer.data(), buffer.size(), &id, &object));
-  if (device_num != 0) {
-    std::shared_ptr<CudaContext> context;
-    manager_->GetContext(device_num - 1, &context);
-    context->OpenIpcBuffer(*object.handle.ipc_handle, &object.handle.buffer);
-    *data = object.handle.buffer;
-    if (metadata != NULL) {
-      // Copy the metadata to the buffer.
-      // CudaBufferWriter writer = new CudaBufferWriter(reinterpret_cast<const std::shared_ptr<CudaBuffer> >(*data));
-      // writer.WriteAt(object.data_size, metadata, metadata_size);
-    }
-  }
-  // Increment the count of the number of instances of this object that this
-  // client is using. A call to PlasmaClient::Release is required to decrement
-  // this
-  // count. Cache the reference to the object.
-  increment_object_count(object_id, &object, false);
-  // We increment the count a second time (and the corresponding decrement will
-  // happen in a PlasmaClient::Release call in plasma_seal) so even if the
-  // buffer
-  // returned by PlasmaClient::Dreate goes out of scope, the object does not get
-  // released before the call to PlasmaClient::Seal happens.
-  increment_object_count(object_id, &object, false);
-  return Status::OK();
-}
 Status PlasmaClient::Get(const ObjectID* object_ids, int64_t num_objects,
                          int64_t timeout_ms, ObjectBuffer* object_buffers) {
   // Fill out the info for the objects that are already in use locally.
@@ -243,15 +238,16 @@ Status PlasmaClient::Get(const ObjectID* object_ids, int64_t num_objects,
           << "Plasma client called get on an unsealed object that it created";
       PlasmaObject* object = &object_entry->second->object;
       if (object->device_num == 0) {
-        object_buffers[i].data = lookup_mmapped_file(object->handle.store_fd);
-        object_buffers[i].data = object_buffers[i].data + object->data_offset;
-        object_buffers[i].metadata = object_buffers[i].data + object->data_size;
+        uint8_t* data;
+        data = lookup_mmapped_file(object->handle.store_fd);
+        object_buffers[i].data = std::make_shared<Buffer>(data + object->data_offset, object->data_size + object->metadata_size);
       }
       else {
-        object_buffers[i].object_data = object->handle.buffer;
+        object_buffers[i].data = gpu_object_map.find(object_ids[i])->second->ptr;
       }
       object_buffers[i].data_size = object->data_size;
       object_buffers[i].metadata_size = object->metadata_size;
+      object_buffers[i].device_num = object->device_num;
       // Increment the count of the number of instances of this object that this
       // client is using. A call to PlasmaClient::Release is required to
       // decrement this
@@ -282,12 +278,14 @@ Status PlasmaClient::Get(const ObjectID* object_ids, int64_t num_objects,
       // If the object was already in use by the client, then the store should
       // have returned it.
       DCHECK_NE(object->data_size, -1);
-      // We won't use this file descriptor, but the store sent us one, so we
-      // need to receive it and then close it right away so we don't leak file
-      // descriptors.
-      int fd = recv_fd(store_conn_);
-      close(fd);
-      ARROW_CHECK(fd >= 0);
+      if (object->device_num == 0) {
+        // We won't use this file descriptor, but the store sent us one, so we
+        // need to receive it and then close it right away so we don't leak file
+        // descriptors.
+        int fd = recv_fd(store_conn_);
+        close(fd);
+        ARROW_CHECK(fd >= 0);
+      }
       // We've already filled out the information for this object, so we can
       // just continue.
       continue;
@@ -299,21 +297,31 @@ Status PlasmaClient::Get(const ObjectID* object_ids, int64_t num_objects,
       // this object.
       if (object->device_num == 0) {
         int fd = recv_fd(store_conn_);
+        uint8_t* data;
         ARROW_CHECK(fd >= 0);
-        object_buffers[i].data =
-            lookup_or_mmap(fd, object->handle.store_fd, object->handle.mmap_size);
+        data = lookup_or_mmap(fd, object->handle.store_fd, object->handle.mmap_size);
         // Finish filling out the return values.
-        object_buffers[i].data = object_buffers[i].data + object->data_offset;
-        object_buffers[i].metadata = object_buffers[i].data + object->data_size;
+        object_buffers[i].data = std::make_shared<Buffer>(data + object->data_offset, object->data_size + object->metadata_size);
       }
       else {
-        std::shared_ptr<CudaContext> context;
-        manager_->GetContext(object->device_num - 1, &context);
-        RETURN_NOT_OK(context->OpenIpcBuffer(*object->handle.ipc_handle, &object->handle.buffer));
-        object_buffers[i].object_data = object->handle.buffer;
+        std::lock_guard<std::mutex> lock(gpu_mutex);
+        auto handle = gpu_object_map.find(object_ids[i]);
+        if (handle == gpu_object_map.end()) {
+          std::shared_ptr<CudaContext> context;
+          manager_->GetContext(object->device_num - 1, &context);
+          GpuProcessHandle* obj_handle = new GpuProcessHandle();
+          context->OpenIpcBuffer(*object->handle.ipc_handle, &obj_handle->ptr);
+          gpu_object_map[object_ids[i]]  = obj_handle;
+          object_buffers[i].data = obj_handle->ptr;
+        }
+        else {
+          handle->second->client_count += 1;
+          object_buffers[i].data = handle->second->ptr;
+        }
       }
       object_buffers[i].data_size = object->data_size;
       object_buffers[i].metadata_size = object->metadata_size;
+      object_buffers[i].device_num = object->device_num;
       // Increment the count of the number of instances of this object that this
       // client is using. A call to PlasmaClient::Release is required to
       // decrement this
@@ -488,16 +496,19 @@ static inline bool compute_object_hash_parallel(XXH64_state_t* hash_state,
 
 static uint64_t compute_object_hash(const ObjectBuffer& obj_buffer) {
   XXH64_state_t hash_state;
+  if (obj_buffer.device_num != 0) {
+    return 0;
+  }
   XXH64_reset(&hash_state, XXH64_DEFAULT_SEED);
   if (obj_buffer.data_size >= kBytesInMB) {
     compute_object_hash_parallel(&hash_state,
-                                 reinterpret_cast<unsigned char*>(obj_buffer.data),
+                                 reinterpret_cast<const unsigned char*>(obj_buffer.data->data()),
                                  obj_buffer.data_size);
   } else {
-    XXH64_update(&hash_state, reinterpret_cast<unsigned char*>(obj_buffer.data),
+    XXH64_update(&hash_state, reinterpret_cast<const unsigned char*>(obj_buffer.data->data()),
                  obj_buffer.data_size);
   }
-  XXH64_update(&hash_state, reinterpret_cast<unsigned char*>(obj_buffer.metadata),
+  XXH64_update(&hash_state, reinterpret_cast<const unsigned char*>(obj_buffer.data->data() + obj_buffer.data_size),
                obj_buffer.metadata_size);
   return XXH64_digest(&hash_state);
 }
