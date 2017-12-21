@@ -30,11 +30,17 @@
 #include "arrow/util/visibility.h"
 #include "plasma/common.h"
 #include "arrow/buffer.h"
+
+#ifdef PLASMA_GPU
 #include "arrow/gpu/cuda_api.h"
+#endif
 
 using arrow::Status;
-using namespace arrow::gpu;
 using arrow::Buffer;
+
+#ifdef PLASMA_GPU
+using namespace arrow::gpu;
+#endif
 
 namespace plasma {
 
@@ -365,8 +371,10 @@ class ARROW_EXPORT PlasmaClient {
   /// information to make sure that it does not delay in releasing so much
   /// memory that the store is unable to evict enough objects to free up space.
   int64_t store_capacity_;
+#ifdef PLASMA_GPU
   /// Cuda Device Manager.
   arrow::gpu::CudaDeviceManager* manager_;
+#endif
 };
 
 }  // namespace plasma

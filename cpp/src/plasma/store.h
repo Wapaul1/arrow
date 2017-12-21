@@ -176,7 +176,9 @@ class PlasmaStore {
   std::unordered_map<int, NotificationQueue> pending_notifications_;
 
   std::unordered_map<int, std::unique_ptr<Client>> connected_clients_;
+#ifdef PLASMA_GPU
   CudaDeviceManager* manager_;
+#endif
 };
 
 }  // namespace plasma

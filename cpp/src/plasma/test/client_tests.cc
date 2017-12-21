@@ -26,14 +26,13 @@
 #include "plasma/common.h"
 #include "plasma/plasma.h"
 #include "plasma/protocol.h"
-#include "arrow/gpu/cuda_api.h"
 
 #include "gtest/gtest.h"
 
 namespace plasma {
 
 std::string test_executable;  // NOLINT
-using namespace arrow::gpu;
+
 class TestPlasmaStore : public ::testing::Test {
  public:
   // TODO(pcm): At the moment, stdout of the test gets mixed up with

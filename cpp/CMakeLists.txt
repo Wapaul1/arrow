@@ -117,7 +117,7 @@ if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
 
   option(ARROW_GPU
     "Build the Arrow GPU extensions (requires CUDA installation)"
-    ON)
+    OFF)
 
   option(ARROW_JEMALLOC
     "Build the Arrow jemalloc-based allocator"
@@ -165,7 +165,7 @@ if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
 
   option(ARROW_PLASMA
     "Build the plasma object store along with Arrow"
-    ON)
+    OFF)
 
   option(ARROW_USE_SSE
     "Build with SSE4 optimizations"

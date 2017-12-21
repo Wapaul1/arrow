@@ -37,9 +37,11 @@
 #include "arrow/util/logging.h"
 #include "plasma/common.h"
 #include "plasma/common_generated.h"
+#ifdef PLASMA_GPU
 #include "arrow/gpu/cuda_api.h"
 
 using namespace arrow::gpu;
+#endif
 
 namespace plasma {
 
@@ -69,8 +71,10 @@ typedef std::unordered_map<ObjectID, ObjectRequest, UniqueIDHasher> ObjectReques
 
 /// Handle to access memory mapped file and map it into client address space.
 struct object_handle {
+#ifdef PLASMA_GPU
   // IPC handle for Cuda.
   std::shared_ptr<CudaIpcMemHandle> ipc_handle;
+#endif
   /// The file descriptor of the memory mapped file in the store. It is used as
   /// a unique identifier of the file in the client to look up the corresponding
   /// file descriptor on the client's side.
@@ -126,8 +130,11 @@ struct ObjectTableEntry {
   ptrdiff_t offset;
   /// Pointer to the object data. Needed to free the object.
   uint8_t* pointer;
+#ifdef PLASMA_GPU
+  /// GPU handle to share with clients.
+  std::shared_ptr<CudaBuffer> gpu_handle;
+#endif
   /// Set of clients currently using this object.
-  std::shared_ptr<CudaBuffer> gpu;
   std::unordered_set<Client*> clients;
   /// The state of the object, e.g., whether it is open or sealed.
   object_state state;

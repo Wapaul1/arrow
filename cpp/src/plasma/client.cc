@@ -46,15 +46,20 @@
 #include "plasma/io.h"
 #include "plasma/plasma.h"
 #include "plasma/protocol.h"
-#include "arrow/gpu/cuda_api.h"
 #include "arrow/buffer.h"
+#ifdef PLASMA_GPU
+#include "arrow/gpu/cuda_api.h"
+#endif
 
 #define XXH_STATIC_LINKING_ONLY
 #include "thirdparty/xxhash.h"
 
 #define XXH64_DEFAULT_SEED 0
-using namespace arrow::gpu;
+
 using arrow::MutableBuffer;
+#ifdef PLASMA_GPU
+using namespace arrow::gpu;
+#endif
 
 namespace plasma {
 
@@ -77,16 +82,23 @@ struct ObjectInUseEntry {
   bool is_sealed;
 };
 
+#ifdef PLASMA_GPU
 struct GpuProcessHandle {
   std::shared_ptr<CudaBuffer> ptr;
   int client_count;
 };
 
+// This is necessary as IPC handles can only be mapped once per process.
+// Thus if multiple clients in the same process get the same gpu object,
+// they need to access the same mapped CudaBuffer.
 static std::unordered_map<ObjectID, GpuProcessHandle*, UniqueIDHasher> gpu_object_map;
 static std::mutex gpu_mutex;
+#endif
 
 PlasmaClient::PlasmaClient() {
+#ifdef PLASMA_GPU
   CudaDeviceManager::GetInstance(&manager_);
+#endif
 }
 
 PlasmaClient::~PlasmaClient() {}
@@ -191,6 +203,7 @@ Status PlasmaClient::Create(const ObjectID& object_id, int64_t data_size,
     }
   }
   else {
+#ifdef PLASMA_GPU
     std::lock_guard<std::mutex> lock(gpu_mutex);
     std::shared_ptr<CudaContext> context;
     manager_->GetContext(device_num - 1, &context);
@@ -203,6 +216,9 @@ Status PlasmaClient::Create(const ObjectID& object_id, int64_t data_size,
       CudaBufferWriter writer(std::dynamic_pointer_cast<CudaBuffer>(*data));
       writer.WriteAt(object.data_size, metadata, metadata_size);
     }
+#else
+    ARROW_LOG(FATAL) << "Arrow GPU library is not enabled.";
+#endif
   }
 
   // Increment the count of the number of instances of this object that this
@@ -243,7 +259,11 @@ Status PlasmaClient::Get(const ObjectID* object_ids, int64_t num_objects,
         object_buffers[i].data = std::make_shared<Buffer>(data + object->data_offset, object->data_size + object->metadata_size);
       }
       else {
+#ifdef ARROW_GPU
         object_buffers[i].data = gpu_object_map.find(object_ids[i])->second->ptr;
+#else
+        ARROW_LOG(FATAL) << "This should be unreachable as no objects can be created on a gpu.";
+#endif
       }
       object_buffers[i].data_size = object->data_size;
       object_buffers[i].metadata_size = object->metadata_size;
@@ -304,6 +324,7 @@ Status PlasmaClient::Get(const ObjectID* object_ids, int64_t num_objects,
         object_buffers[i].data = std::make_shared<Buffer>(data + object->data_offset, object->data_size + object->metadata_size);
       }
       else {
+#ifdef PLASMA_GPU
         std::lock_guard<std::mutex> lock(gpu_mutex);
         auto handle = gpu_object_map.find(object_ids[i]);
         if (handle == gpu_object_map.end()) {
@@ -318,6 +339,9 @@ Status PlasmaClient::Get(const ObjectID* object_ids, int64_t num_objects,
           handle->second->client_count += 1;
           object_buffers[i].data = handle->second->ptr;
         }
+#else
+        ARROW_LOG(FATAL) << "This should be unreachable as no objects can be created on a gpu.";
+#endif
       }
       object_buffers[i].data_size = object->data_size;
       object_buffers[i].metadata_size = object->metadata_size;
@@ -497,6 +521,7 @@ static inline bool compute_object_hash_parallel(XXH64_state_t* hash_state,
 static uint64_t compute_object_hash(const ObjectBuffer& obj_buffer) {
   XXH64_state_t hash_state;
   if (obj_buffer.device_num != 0) {
+    // TODO(wap): Create cuda program to hash data on gpu.
     return 0;
   }
   XXH64_reset(&hash_state, XXH64_DEFAULT_SEED);

@@ -54,9 +54,12 @@
 #include "plasma/fling.h"
 #include "plasma/io.h"
 #include "plasma/malloc.h"
+
+#ifdef PLASMA_GPU
 #include "arrow/gpu/cuda_api.h"
 
 using namespace arrow::gpu;
+#endif
 
 namespace plasma {
 
@@ -154,11 +157,13 @@ int PlasmaStore::create_object(const ObjectID& object_id, int64_t data_size,
   }
   // Try to evict objects until there is enough space.
   uint8_t* pointer;
-  std::shared_ptr<CudaBuffer> data_gpu;
+#ifdef PLASMA_GPU
+  std::shared_ptr<CudaBuffer> gpu_handle;
   std::shared_ptr<CudaContext> context_;
   if (device_num != 0) {
     manager_->GetContext(device_num - 1, &context_);
   }
+#endif
   do {
     // Allocate space for the new object. We use dlmemalign instead of dlmalloc
     // in order to align the allocated region to a 64-byte boundary. This is not
@@ -171,9 +176,11 @@ int PlasmaStore::create_object(const ObjectID& object_id, int64_t data_size,
       pointer =
           reinterpret_cast<uint8_t*>(dlmemalign(BLOCK_SIZE, data_size + metadata_size));
     }
+#ifdef PLASMA_GPU
     else {
       context_->Allocate(data_size + metadata_size, &data_gpu);
     }
+#endif
     if (pointer == NULL) {
       // Tell the eviction policy how much space we need to create this object.
       std::vector<ObjectID> objects_to_evict;
@@ -200,7 +207,6 @@ int PlasmaStore::create_object(const ObjectID& object_id, int64_t data_size,
   entry->info.data_size = data_size;
   entry->info.metadata_size = metadata_size;
   entry->pointer = pointer;
-  entry->gpu = data_gpu;
   // TODO(pcm): Set the other fields.
   entry->fd = fd;
   entry->map_size = map_size;
@@ -208,9 +214,12 @@ int PlasmaStore::create_object(const ObjectID& object_id, int64_t data_size,
   entry->state = PLASMA_CREATED;
   entry->device_num = device_num;
   store_info_.objects[object_id] = std::move(entry);
+#ifdef PLASMA_GPU
   if (device_num != 0) {
+    entry->gpu_handle = data_gpu;
     data_gpu->ExportForIpc(&result->handle.ipc_handle); 
   }
+#endif
   result->handle.store_fd = fd;
   result->handle.mmap_size = map_size;
   result->data_offset = offset;
@@ -231,9 +240,11 @@ void PlasmaObject_init(PlasmaObject* object, ObjectTableEntry* entry) {
   DCHECK(object != NULL);
   DCHECK(entry != NULL);
   DCHECK(entry->state == PLASMA_SEALED);
+#ifdef PLASMA_GPU
   if (entry->device_num != 0) {
     entry->gpu->ExportForIpc(&object->handle.ipc_handle); 
   }
+#endif
   object->handle.store_fd = entry->fd;
   object->handle.mmap_size = entry->map_size;
   object->data_offset = entry->offset;
